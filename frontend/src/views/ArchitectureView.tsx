@@ -297,7 +297,7 @@ WITH (m = 16, ef_construction = 64);`
               className="px-4 py-2 rounded-lg bg-primary hover:bg-primary/95 text-on-primary text-xs font-semibold flex items-center gap-2 shadow-sm transition-all cursor-pointer"
             >
               <span className="material-symbols-outlined text-[16px]">forum</span>
-              <span>Ask Brain on Architecture</span>
+              <span>Ask the Brain on Architecture</span>
             </button>
           </div>
         </div>

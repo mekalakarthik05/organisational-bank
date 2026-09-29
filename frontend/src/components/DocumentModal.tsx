@@ -54,55 +54,46 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
         {/* Metadata info strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-space-xs p-space-sm rounded-xl bg-surface-container-low border border-outline-variant/15 text-xs font-mono-code">
           <div>
-            <span className="text-outline block text-[10px]">Author</span>
+            <span className="text-outline block text-[10px]">Source attribution</span>
             <span className="text-on-surface font-semibold">{doc.author.name}</span>
           </div>
           <div>
             <span className="text-outline block text-[10px]">Status</span>
-            <span className="text-tertiary font-semibold">Verified Ground Truth</span>
+            <span className="text-on-surface font-semibold">{doc.status || doc.authority}</span>
           </div>
           <div>
             <span className="text-outline block text-[10px]">Last Updated</span>
             <span className="text-on-surface">{doc.updatedAt}</span>
           </div>
           <div>
-            <span className="text-outline block text-[10px]">Vector Anchor</span>
-            <span className="text-primary font-semibold">768-dim HNSW</span>
+            <span className="text-outline block text-[10px]">Source type</span>
+            <span className="text-primary font-semibold">{doc.source || doc.type}</span>
           </div>
         </div>
 
         {/* Content Abstract & Markdown Preview */}
         <div className="flex flex-col gap-space-xs">
           <span className="font-label-sm text-xs font-semibold text-outline uppercase tracking-wider">
-            Canonical Document Overview
+            Current reference content
           </span>
           <p className="font-body-md text-sm text-on-surface leading-relaxed p- space-sm rounded-xl bg-surface-container-lowest border border-outline-variant/20">
             {doc.description}
           </p>
         </div>
 
-        {/* Ingested AST Layout Chunks / Excerpt */}
+        {/* Source lineage */}
         <div className="flex flex-col gap-space-xs">
           <div className="flex items-center justify-between">
-            <span className="font-label-sm text-xs font-semibold text-outline uppercase tracking-wider">
-              Extracted AST Nodes &amp; Semantic Chunks
-            </span>
-            <span className="font-mono-code text-[11px] text-tertiary">3 Chunks Grounded</span>
+            <span className="font-label-sm text-xs font-semibold text-outline uppercase tracking-wider">Source lineage</span>
+            <span className="font-mono-code text-[11px] text-primary">{doc.id}</span>
           </div>
-          <div className="space-y-2">
-            <div className="p-3 rounded-lg bg-surface border border-outline-variant/20 font-mono-code text-xs text-on-surface leading-relaxed">
-              <span className="text-primary font-semibold">[Chunk #01 — Section 4.2]</span>: Transactional ledger isolation requires serializable ACID guarantees. The arbiter board verified zero-drift reconciliation over 50k transactions/sec.
-            </div>
-            <div className="p-3 rounded-lg bg-surface border border-outline-variant/20 font-mono-code text-xs text-on-surface leading-relaxed">
-              <span className="text-secondary font-semibold">[Chunk #02 — Architecture Scope]</span>: Direct integration with payment processing worker pods, Patroni high-availability failover cluster, and automated ledger checkpoints.
-            </div>
-          </div>
+          <p className="rounded-lg bg-surface-container-low p-3 text-xs leading-relaxed text-on-surface-variant">{doc.sourceReference || 'No additional source reference was recorded.'}</p>
         </div>
 
         {/* Actions */}
         <div className="flex items-center justify-between pt-space-xs border-t border-outline-variant/15 flex-wrap gap-2">
           <span className="font-mono-code text-xs text-outline">
-            Corpus ID: {doc.id} · Linked to Memory Lake
+            RAG document ID: {doc.id} · Current/reference knowledge
           </span>
           <div className="flex items-center gap-space-xs">
             <button
@@ -119,7 +110,7 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
               className="px-4 py-2 rounded-lg bg-primary text-on-primary font-label-md text-xs font-semibold hover:bg-primary-container transition-all flex items-center gap-1.5 shadow-sm"
             >
               <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
-              <span>Ask Brain About This</span>
+              <span>Ask the Brain About This</span>
             </button>
           </div>
         </div>

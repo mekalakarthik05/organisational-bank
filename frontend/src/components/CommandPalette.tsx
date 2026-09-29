@@ -100,7 +100,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     auto_awesome
                   </span>
                   <span className="font-label-md text-sm text-on-surface truncate">
-                    Ask Brain: "{query}"
+                    Ask the Brain: "{query}"
                   </span>
                 </div>
                 <span className="font-mono-code text-[11px] text-primary">Press ↵</span>
@@ -238,7 +238,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         {/* Footer shortcuts */}
         <div className="p-3 bg-surface-container-low/60 border-t border-outline-variant/15 flex items-center justify-between text-outline font-label-sm text-xs">
           <span>Navigate with ↑ ↓ · Press Enter to execute</span>
-          <span className="font-mono-code text-tertiary">Nexus RAG Vector Engine</span>
+          <span className="font-mono-code text-tertiary">Organizational Brain</span>
         </div>
       </div>
     </div>

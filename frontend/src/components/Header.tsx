@@ -17,11 +17,11 @@ export const Header: React.FC<HeaderProps> = ({
   const getBreadcrumb = () => {
     switch (currentPath) {
       case 'brain':
-        return { section: 'Hindsight Memory', title: 'Organizational Brain' };
+        return { section: 'Current context', title: 'Organizational Brain' };
       case 'ask':
-        return { section: 'Learning Loop', title: 'Memory Lab' };
+        return { section: 'Learning loop', title: 'Organizational Memory' };
       case 'knowledge':
-        return { section: 'Memory Lake', title: 'Knowledge Explorer' };
+        return { section: 'Current knowledge', title: 'Knowledge Explorer' };
       case 'projects':
         return { section: 'Workspace', title: 'Projects' };
       case 'decisions':
@@ -53,7 +53,7 @@ export const Header: React.FC<HeaderProps> = ({
               onClick={() => onNavigate('brain')}
               className="text-outline hover:text-on-surface cursor-pointer font-medium"
             >
-              Nexus
+              Organizational Brain
             </span>
             <span className="text-outline/60">/</span>
             <span className="text-outline/80 hidden sm:inline">{breadcrumb.section}</span>
@@ -65,7 +65,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-surface-container-low text-[11px] font-mono-code text-tertiary border border-tertiary-fixed/30">
             <span className="w-1.5 h-1.5 rounded-full bg-tertiary animate-pulse"></span>
-            <span>Hindsight Memory Lab</span>
+            <span>Current knowledge + hindsight</span>
           </div>
         </div>
 
@@ -94,7 +94,7 @@ export const Header: React.FC<HeaderProps> = ({
             className="hidden sm:flex items-center gap-1.5 h-8 px-3 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:bg-primary/95 transition-all shadow-xs active:scale-95 cursor-pointer"
           >
             <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
-            <span>Ask Brain</span>
+            <span>Ask the Brain</span>
           </button>
 
           <span className="rounded-lg border border-outline-variant/20 bg-surface-container-low px-2 py-1 font-mono-code text-[9px] text-outline">SYNTHETIC DATA</span>

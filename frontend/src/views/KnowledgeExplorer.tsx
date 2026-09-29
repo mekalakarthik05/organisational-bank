@@ -1,6 +1,26 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavigationPath, KnowledgeItem } from '../types';
-import { INITIAL_KNOWLEDGE_ITEMS, AVATARS } from '../data/mockData';
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/$/, '');
+
+interface RagDocument {
+  id: string;
+  title: string;
+  doc_type: string;
+  department: string;
+  project_id: string | null;
+  status: string;
+  source: string;
+  source_reference: string;
+  content: string;
+}
+
+async function api<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail || `Request failed (${response.status})`);
+  return payload as T;
+}
 
 interface KnowledgeExplorerProps {
   onNavigate: (path: NavigationPath, queryParam?: string) => void;
@@ -18,16 +38,57 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [selectedProject, setSelectedProject] = useState('All Projects');
   const [selectedDepartment, setSelectedDepartment] = useState('All Departments');
-  const [items, setItems] = useState<KnowledgeItem[]>(INITIAL_KNOWLEDGE_ITEMS);
+  const [items, setItems] = useState<KnowledgeItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      api<{ items: RagDocument[] }>('/documents'),
+      api<{ projects: Array<{ id: string; name: string }> }>('/organization/projects'),
+    ]).then(([documents, projectResult]) => {
+      if (!active) return;
+      const projectNames = new Map(projectResult.projects.map((project) => [project.id, project.name]));
+      setItems(documents.items.map((document) => {
+        const type = document.doc_type.toLowerCase().includes('policy')
+          ? 'Policy'
+          : document.doc_type.toLowerCase().includes('process') || document.doc_type.toLowerCase().includes('sop')
+            ? 'Process & SOP'
+            : 'Technical Spec';
+        const sourceName = document.source_reference || document.source || 'Source not recorded';
+        return {
+          id: document.id,
+          type,
+          title: document.title,
+          description: document.content,
+          project: projectNames.get(document.project_id || '') || 'Organization-wide',
+          authority: document.status === 'current' ? 'Current RAG reference' : 'Archived reference',
+          author: { name: sourceName, role: document.department || 'Department not recorded', avatar: '' },
+          updatedAt: 'Date not recorded',
+          tag: document.id,
+          verified: false,
+          projectId: document.project_id,
+          department: document.department,
+          source: document.source,
+          sourceReference: document.source_reference,
+          status: document.status,
+        };
+      }));
+    }).catch((error: unknown) => {
+      if (active) setLoadError(error instanceof Error ? error.message : 'Current RAG documents are unavailable');
+    }).finally(() => {
+      if (active) setIsLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
 
   const categories = [
-    { label: 'All', count: 248 },
-    { label: 'Projects', count: 18 },
-    { label: 'Decisions', count: 64 },
-    { label: 'Processes & SOPs', count: 42 },
-    { label: 'Technical Specs', count: 76 },
-    { label: 'Policies', count: 28 },
-    { label: 'Lessons Learned', count: 20 },
+    { label: 'All', count: items.length },
+    ...Array.from(new Set(items.map((item) => item.type))).map((type) => ({
+      label: type === 'Process & SOP' ? 'Processes & SOPs' : type === 'Technical Spec' ? 'Technical Specs' : type === 'Policy' ? 'Policies' : type,
+      count: items.filter((item) => item.type === type).length,
+    })),
   ];
 
   const handleToggleBookmark = (id: string, e: React.MouseEvent) => {
@@ -47,27 +108,25 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
     const matchesSearch =
       item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       item.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.project.toLowerCase().includes(searchQuery.toLowerCase());
+      item.project.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (item.sourceReference || '').toLowerCase().includes(searchQuery.toLowerCase());
 
     const matchesCategory =
       activeCategory === 'All'
         ? true
-        : activeCategory === 'Decisions'
-        ? item.type === 'Decision'
         : activeCategory === 'Processes & SOPs'
-        ? item.type === 'Process & SOP'
-        : activeCategory === 'Technical Specs'
-        ? item.type === 'Technical Spec'
-        : activeCategory === 'Policies'
-        ? item.type === 'Policy'
-        : activeCategory === 'Lessons Learned'
-        ? item.type === 'Lessons Learned'
-        : true;
+          ? item.type === 'Process & SOP'
+          : activeCategory === 'Technical Specs'
+            ? item.type === 'Technical Spec'
+            : activeCategory === 'Policies'
+              ? item.type === 'Policy'
+              : item.type === activeCategory;
 
     const matchesProject =
       selectedProject === 'All Projects' || item.project === selectedProject;
+    const matchesDepartment = selectedDepartment === 'All Departments' || item.department === selectedDepartment;
 
-    return matchesSearch && matchesCategory && matchesProject;
+    return matchesSearch && matchesCategory && matchesProject && matchesDepartment;
   });
 
   return (
@@ -78,46 +137,21 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
           <div className="flex items-center gap-space-xs text-primary">
             <span className="material-symbols-outlined text-[20px]">hub</span>
             <span className="font-label-sm text-label-sm uppercase tracking-wider text-primary font-semibold">
-              Decentralized Memory Lake
+              CURRENT REFERENCE KNOWLEDGE
             </span>
           </div>
           <h1 className="font-headline-lg text-headline-lg font-bold tracking-tight text-on-surface">
             Knowledge Explorer
           </h1>
           <p className="font-body-md text-body-md text-on-surface-variant max-w-2xl">
-            Explore everything your organization knows across projects, decisions, and systems.
+            Browse current organizational standards and reference documents from the separate RAG store.
           </p>
         </div>
 
         <div className="flex items-center flex-wrap gap-space-xs">
-          {/* View Toggle Switch */}
-          <div className="flex items-center p-1 rounded-xl bg-surface-container-high shadow-inner border border-outline-variant/20">
-            <button
-              onClick={() => setViewMode('list')}
-              className={`flex items-center gap-space-2xs px-space-sm py-1.5 rounded-lg font-label-md text-label-md font-semibold transition-all ${
-                viewMode === 'list'
-                  ? 'bg-surface-container-lowest text-primary shadow-sm'
-                  : 'text-on-surface-variant hover:text-on-surface'
-              }`}
-            >
-              <span className="material-symbols-outlined text-[18px]">view_list</span>
-              <span>List View</span>
-            </button>
-            <button
-              onClick={() => setViewMode('graph')}
-              className={`flex items-center gap-space-2xs px-space-sm py-1.5 rounded-lg font-label-md text-label-md font-semibold transition-all ${
-                viewMode === 'graph'
-                  ? 'bg-surface-container-lowest text-primary shadow-sm'
-                  : 'text-on-surface-variant hover:text-on-surface'
-              }`}
-            >
-              <span className="material-symbols-outlined text-[18px]">bubble_chart</span>
-              <span>Graph View</span>
-              <span className="px-1.5 py-0.2 rounded-full bg-secondary-fixed text-on-secondary-fixed font-mono-code text-[10px]">
-                Peek
-              </span>
-            </button>
-          </div>
+          <span className="rounded-lg bg-surface-container-low px-3 py-2 font-mono-code text-xs text-on-surface-variant">
+            {items.length} live RAG documents
+          </span>
 
           <button
             onClick={() => onNavigate('ingest')}
@@ -136,6 +170,8 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
           </button>
         </div>
       </div>
+
+      {loadError && <div role="alert" className="rounded-lg border border-error/20 bg-error-container/40 p-3 text-xs text-on-error-container">{loadError}</div>}
 
       {/* Search & Omni Filter Command Bar */}
       <div className="flex flex-col gap-space-sm">
@@ -197,10 +233,7 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
                 className="appearance-none h-8 pl-space-sm pr-7 rounded-lg bg-surface-container-lowest text-on-surface font-label-md text-label-md shadow-sm border border-outline-variant/20 focus:outline-none cursor-pointer"
               >
                 <option value="All Projects">All Projects</option>
-                <option value="Project Phoenix">Project Phoenix</option>
-                <option value="Platform Core">Platform Core</option>
-                <option value="Project Atlas">Project Atlas</option>
-                <option value="Enterprise Compliance">Enterprise Compliance</option>
+                {[...new Set(items.map((item) => item.project))].map((project) => <option key={project} value={project}>{project}</option>)}
               </select>
               <span className="material-symbols-outlined text-[16px] text-outline absolute right-2 pointer-events-none">
                 expand_more
@@ -214,10 +247,7 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
                 className="appearance-none h-8 pl-space-sm pr-7 rounded-lg bg-surface-container-lowest text-on-surface font-label-md text-label-md shadow-sm border border-outline-variant/20 focus:outline-none cursor-pointer"
               >
                 <option value="All Departments">All Departments</option>
-                <option value="Engineering">Engineering</option>
-                <option value="Product & Design">Product &amp; Design</option>
-                <option value="Infra & Security">Infra &amp; Security</option>
-                <option value="Operations">Operations</option>
+                {[...new Set(items.map((item) => item.department).filter((department): department is string => Boolean(department)))].map((department) => <option key={department} value={department}>{department}</option>)}
               </select>
               <span className="material-symbols-outlined text-[16px] text-outline absolute right-2 pointer-events-none">
                 expand_more
@@ -244,7 +274,7 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
                   </p>
                 </div>
                 <button
-                  onClick={() => setViewMode('list')}
+                  onClick={() => onShowToast('Current RAG records do not expose graph relationships.')}
                   className="px-3 py-1.5 rounded-lg bg-surface-container-low text-primary font-label-md text-xs font-semibold hover:bg-surface-container"
                 >
                   Return to List
@@ -335,7 +365,9 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
             </div>
           ) : (
             /* List Mode Knowledge Cards Feed */
-            filteredItems.map((item) => (
+            isLoading ? <p className="rounded-xl bg-surface-container-low p-4 text-sm text-on-surface-variant">Loading current RAG documents…</p>
+            : filteredItems.length === 0 ? <p className="rounded-xl bg-surface-container-low p-4 text-sm text-on-surface-variant">{loadError ? 'Current RAG documents could not be loaded.' : 'No current RAG documents match these filters.'}</p>
+            : filteredItems.map((item) => (
               <div
                 key={item.id}
                 onClick={() => onInspectDocument(item)}
@@ -362,7 +394,7 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
                     </span>
                     <span className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-surface-container-high text-on-surface font-label-sm text-label-sm font-semibold">
                       <span className="material-symbols-outlined text-[14px] text-tertiary">
-                        verified
+                        description
                       </span>
                       {item.authority}
                     </span>
@@ -403,14 +435,10 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
 
                 <div className="mt-space-md pt-space-sm border-t border-surface-container flex flex-col sm:flex-row sm:items-center justify-between gap-space-sm">
                   <div className="flex items-center gap-space-xs text-outline font-label-sm text-label-sm">
-                    <img
-                      className="w-6 h-6 rounded-full object-cover shrink-0 ring-1 ring-outline/20"
-                      src={item.author.avatar}
-                      alt={item.author.name}
-                    />
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-surface-container-high text-[9px] font-bold text-on-surface-variant">{item.author.name.slice(0, 2).toUpperCase()}</span>
                     <span className="font-medium text-on-surface">{item.author.name}</span>
                     <span>·</span>
-                    <span>{item.updatedAt}</span>
+                    <span>{item.source || 'Source not recorded'}</span>
                     <span>·</span>
                     <span className="font-mono-code text-[10px] text-primary font-semibold">
                       {item.tag}
@@ -441,8 +469,21 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
           )}
         </div>
 
-        {/* Side Panel: Health Gauge, Cluster Peek & Top Contributors (4 cols) */}
-        <div className="lg:col-span-4 flex flex-col gap-space-md">
+        <aside className="lg:col-span-4 flex flex-col gap-space-md">
+          <section className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-space-lg">
+            <h2 className="font-headline-sm text-headline-sm font-semibold text-on-surface">Current RAG corpus</h2>
+            <p className="mt-1 text-xs text-on-surface-variant">Reference documents are stored separately from historical Hindsight experiences.</p>
+            <dl className="mt-4 grid grid-cols-2 gap-3">
+              <div className="rounded-lg bg-surface-container-low p-3"><dt className="font-mono-code text-[10px] uppercase text-outline">Documents</dt><dd className="mt-1 text-lg font-semibold text-on-surface">{items.length}</dd></div>
+              <div className="rounded-lg bg-surface-container-low p-3"><dt className="font-mono-code text-[10px] uppercase text-outline">Projects covered</dt><dd className="mt-1 text-lg font-semibold text-on-surface">{new Set(items.map((item) => item.projectId).filter(Boolean)).size}</dd></div>
+            </dl>
+            <h3 className="mt-4 border-t border-outline-variant/15 pt-3 text-xs font-semibold text-on-surface">Retrieved reference sources</h3>
+            <ul className="mt-2 grid gap-2">{items.slice(0, 5).map((item) => <li key={item.id} className="rounded-lg bg-surface-container-low p-2.5"><div className="flex items-start justify-between gap-2"><span className="text-xs font-semibold text-on-surface">{item.title}</span><span className="shrink-0 font-mono-code text-[9px] text-outline">{item.id}</span></div><p className="mt-1 text-[10px] text-on-surface-variant">{item.project} · {item.department || 'Department not recorded'}</p></li>)}</ul>
+          </section>
+        </aside>
+
+        {/* Legacy simulated panel is unreachable; live RAG metrics are rendered above. */}
+        <div className="hidden" aria-hidden="true">
           {/* Knowledge Health Score Card with Visual SVG Gauge */}
           <div className="flex flex-col rounded-2xl bg-surface-container-lowest p-space-lg shadow-sm border border-outline-variant/15">
             <div className="flex items-center justify-between">
@@ -601,7 +642,7 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
                   <span className="font-mono-code text-mono-code font-bold text-outline w-4">01</span>
                   <img
                     className="w-8 h-8 rounded-full object-cover shrink-0"
-                    src={AVATARS.alex}
+                    src={undefined}
                     alt="Alex Morgan"
                   />
                   <div className="flex flex-col min-w-0">
@@ -628,7 +669,7 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
                   <span className="font-mono-code text-mono-code font-bold text-outline w-4">02</span>
                   <img
                     className="w-8 h-8 rounded-full object-cover shrink-0"
-                    src={AVATARS.sarah}
+                    src={undefined}
                     alt="Sarah Chen"
                   />
                   <div className="flex flex-col min-w-0">
@@ -655,7 +696,7 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
                   <span className="font-mono-code text-mono-code font-bold text-outline w-4">03</span>
                   <img
                     className="w-8 h-8 rounded-full object-cover shrink-0"
-                    src={AVATARS.marcus}
+                    src={undefined}
                     alt="Marcus Vance"
                   />
                   <div className="flex flex-col min-w-0">
@@ -680,7 +721,7 @@ export const KnowledgeExplorer: React.FC<KnowledgeExplorerProps> = ({
                   <span className="font-mono-code text-mono-code font-bold text-outline w-4">04</span>
                   <img
                     className="w-8 h-8 rounded-full object-cover shrink-0"
-                    src={AVATARS.david}
+                    src={undefined}
                     alt="David Kim"
                   />
                   <div className="flex flex-col min-w-0">

@@ -65,7 +65,7 @@ export const MemoryCommandPalette: React.FC<MemoryCommandPaletteProps> = ({
           <button onClick={openMemoryLab} className="flex w-full items-center justify-between rounded-xl p-3 text-left transition-colors hover:bg-primary-fixed/30">
             <span className="flex min-w-0 items-center gap-3">
               <Brain className="h-5 w-5 shrink-0 text-primary" />
-              <span className="min-w-0"><span className="block text-sm font-semibold text-on-surface">Investigate with Hindsight</span><span className="mt-0.5 block truncate text-xs text-on-surface-variant">Compare a baseline with actual retrieved organizational experiences.</span></span>
+              <span className="min-w-0"><span className="block text-sm font-semibold text-on-surface">Investigate with the Organizational Brain</span><span className="mt-0.5 block truncate text-xs text-on-surface-variant">Compare current knowledge with past organizational outcomes before making a recommendation.</span></span>
             </span>
             <ArrowRight className="h-4 w-4 shrink-0 text-primary" />
           </button>

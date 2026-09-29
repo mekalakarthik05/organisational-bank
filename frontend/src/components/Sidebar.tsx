@@ -15,7 +15,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const cognitiveItems: Array<{ path: NavigationPath; label: string; icon: string }> = [
     { path: 'brain', label: 'Organizational Brain', icon: 'neurology' },
-    { path: 'ask', label: 'Memory Lab', icon: 'forum' },
+    { path: 'ask', label: 'Organizational Memory', icon: 'forum' },
+    { path: 'projects', label: 'Projects', icon: 'folder_open' },
+    { path: 'knowledge', label: 'Knowledge Explorer', icon: 'menu_book' },
+    { path: 'ingest', label: 'Ingest RAG Reference', icon: 'upload_file' },
   ];
 
   return (
@@ -31,14 +34,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="flex items-center gap-space-xs cursor-pointer min-w-0"
             onClick={() => onNavigate('brain')}
           >
-            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary text-sm font-bold text-on-primary">N</div>
+            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary text-sm font-bold text-on-primary">OB</div>
             {!collapsed && (
               <div className="flex flex-col min-w-0">
                 <span className="font-headline-sm text-headline-sm font-semibold tracking-tight text-on-surface truncate">
-                  Nexus
+                  Organizational
                 </span>
                 <span className="font-label-sm text-label-sm text-on-surface-variant -mt-1 truncate">
-                  Org Brain
+                  Brain
                 </span>
               </div>
             )}
@@ -58,7 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="px-space-md py-space-xs">
             <div className="flex items-center gap-space-xs rounded-xl bg-surface-container-low px-space-sm py-space-xs">
               <div className="grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-primary-container text-xs font-bold text-on-primary-container">N</div>
-              <div className="min-w-0"><div className="truncate font-label-md text-label-md font-semibold text-on-surface">Nexus Technologies</div><div className="truncate font-label-sm text-label-sm text-outline">Synthetic demo organization</div></div>
+              <div className="min-w-0"><div className="truncate font-label-md text-label-md font-semibold text-on-surface">Organizational Brain</div><div className="truncate font-label-sm text-label-sm text-outline">Current knowledge + hindsight</div></div>
             </div>
           </div>
         ) : (
@@ -119,7 +122,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-tertiary-container"></span>
               </span>
               <span className="font-mono-code text-[11px] text-tertiary truncate">
-                Hindsight Memory Lab
+                Knowledge + Hindsight
               </span>
             </div>
           </div>

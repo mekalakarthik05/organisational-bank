@@ -14,6 +14,14 @@ interface MemorySummary {
   source: string | null;
   synthetic_demo: boolean;
   final_score: number | null;
+  source_reference?: string | null;
+  project_id?: string | null;
+}
+
+interface ProjectOption {
+  id: string;
+  name: string;
+  status: string;
 }
 
 interface TimelineItem {
@@ -51,6 +59,7 @@ interface Overview {
     current_reference_documents: number;
   };
   documents: TimelineItem[];
+  rag_documents: Array<{ id: string; title: string; project_id: string | null; source_reference: string; content: string }>;
   memories: MemorySummary[];
 }
 
@@ -75,8 +84,14 @@ interface Evaluation {
 
 interface Comparison {
   case_context: string;
+  current_state: Array<{ source_id: string; title: string; project_id: string; summary: string }>;
+  canonical_projects: ProjectOption[];
   baseline: string | null;
   memory_answer: string | null;
+  reasoning: string | null;
+  recommendation: string | null;
+  rag_message: string;
+  hindsight_message: string;
   rag_memories: MemorySummary[];
   hindsight_memories: MemorySummary[];
   memories: MemorySummary[];
@@ -85,6 +100,8 @@ interface Comparison {
   retrieval_status: 'ok' | 'partial' | 'unavailable';
   generation_status: 'ok' | 'partial';
   errors: string[];
+  related_project_ids: string[];
+  lineage: { input_id: string; canonical_source_ids: string[]; rag_source_ids: string[]; hindsight_source_ids: string[]; recommendation_evidence_ids: string[] };
 }
 
 interface MemoryLabProps {
@@ -130,6 +147,8 @@ function EvidenceCard({ memory }: { memory: MemorySummary }) {
           <h3 className="break-words font-label-md text-label-md font-semibold text-on-surface">{memory.title}</h3>
           <div className="mt-1 flex flex-wrap items-center gap-2 font-mono-code text-[10px] text-outline">
             <span>{memory.type}</span>
+            {memory.document_id && <span>{memory.document_id}</span>}
+            {memory.project_id && <span>{memory.project_id}</span>}
             {memory.mentioned_at && <span>{formatDate(memory.mentioned_at)}</span>}
           </div>
         </div>
@@ -146,6 +165,7 @@ function EvidenceCard({ memory }: { memory: MemorySummary }) {
         ))}
         {memory.synthetic_demo && <span className="rounded bg-amber-100 px-2 py-0.5 font-mono-code text-[9px] text-amber-900">SYNTHETIC DEMO</span>}
       </div>
+      {memory.source_reference && <p className="text-[10px] text-outline">Source: {memory.source_reference}</p>}
     </article>
   );
 }
@@ -154,6 +174,7 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
   const [tab, setTab] = useState<'compare' | 'timeline'>('compare');
   const [scope, setScope] = useState<'demo' | 'all'>('demo');
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
   const [caseContext, setCaseContext] = useState(initialQuery || INITIAL_CASE);
   const [comparison, setComparison] = useState<Comparison | null>(null);
@@ -168,6 +189,8 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
   const [referenceDocumentId, setReferenceDocumentId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [outcomeOpen, setOutcomeOpen] = useState(false);
+  const [projectId, setProjectId] = useState('');
+  const [learningProof, setLearningProof] = useState<{ title: string; action: string; outcome: string; lesson: string; documentId: string; futureFound: boolean } | null>(null);
   const [syntheticOutcome, setSyntheticOutcome] = useState(true);
   const [outcome, setOutcome] = useState({
     scenario_id: '',
@@ -199,6 +222,12 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
   }, [refresh]);
 
   useEffect(() => {
+    void api<{ projects: ProjectOption[] }>('/organization/projects')
+      .then((result) => setProjects(result.projects))
+      .catch(() => setProjects([]));
+  }, []);
+
+  useEffect(() => {
     if (initialQuery?.trim()) setCaseContext(initialQuery);
   }, [initialQuery]);
 
@@ -214,10 +243,16 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
         body: JSON.stringify({ case_context: caseContext.trim(), scope }),
       });
       setComparison(result);
+      if (result.canonical_projects.length && !projectId) {
+        const namedMatch = result.canonical_projects.find((project) =>
+          caseContext.toLowerCase().includes(project.name.toLowerCase().split(' ')[0]),
+        );
+        setProjectId(namedMatch?.id || result.canonical_projects[0].id);
+      }
       setOutcome((current) => ({
         ...current,
         case_title: current.case_title || caseContext.trim().slice(0, 120),
-        initial_recommendation: (result.baseline || '').slice(0, 1500),
+        initial_recommendation: (result.recommendation || result.baseline || '').slice(0, 1500),
       }));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Comparison failed');
@@ -250,14 +285,15 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
 
   const submitOutcome = async (event: FormEvent) => {
     event.preventDefault();
-    if (!comparison?.baseline || savingOutcome) return;
+    if (!comparison?.recommendation || savingOutcome) return;
     setSavingOutcome(true);
     setError(null);
     try {
-      const result = await api<{ status: string }>('/memory/outcomes', {
+      const result = await api<{ status: string; record: { document_id: string; title: string } }>('/memory/outcomes', {
         method: 'POST',
         body: JSON.stringify({
           scenario_id: outcome.scenario_id || null,
+          project_id: projectId || null,
           case_title: outcome.case_title,
           case_context: caseContext,
           initial_recommendation: outcome.initial_recommendation,
@@ -267,7 +303,7 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
           lesson: outcome.lesson,
           user_preference: outcome.user_preference || null,
           source_reference: syntheticOutcome
-            ? 'Synthetic demo feedback entered in Memory Lab'
+            ? 'Synthetic demo feedback entered in Organizational Memory'
             : outcome.source_reference,
           synthetic_demo: syntheticOutcome,
           reliability: 'medium',
@@ -284,6 +320,44 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
       onShowToast(statusMessage, 'success');
       setOutcomeOpen(false);
       await refresh();
+      const projectName = projects.find((project) => project.id === projectId)?.name || 'the related project';
+      const futureCase = `Future related task for ${projectName}: ${caseContext} Reuse this lesson if its constraints match: ${outcome.lesson}`.slice(0, 3900);
+      const futureScope = syntheticOutcome ? scope : 'all';
+      let futureResult: Comparison;
+      try {
+        futureResult = await api<Comparison>('/memory/compare', {
+          method: 'POST',
+          body: JSON.stringify({ case_context: futureCase, scope: futureScope }),
+        });
+      } catch (recallError) {
+        setLearningProof({
+          title: result.record.title,
+          action: outcome.action_taken,
+          outcome: outcome.outcome_detail,
+          lesson: outcome.lesson,
+          documentId: result.record.document_id,
+          futureFound: false,
+        });
+        const message = recallError instanceof Error ? recallError.message : 'Future Hindsight recall failed';
+        setError(`Outcome was stored in Hindsight, but future retrieval could not be confirmed: ${message}`);
+        onShowToast('Outcome stored; future retrieval could not be confirmed.', 'error');
+        return;
+      }
+      setComparison(futureResult);
+      setCaseContext(futureCase);
+      setLearningProof({
+        title: result.record.title,
+        action: outcome.action_taken,
+        outcome: outcome.outcome_detail,
+        lesson: outcome.lesson,
+        documentId: result.record.document_id,
+          futureFound: futureResult.hindsight_memories.some((memory) =>
+          memory.document_id === result.record.document_id || memory.tags.includes(`experience:${result.record.document_id}`),
+        ),
+      });
+      if (!futureResult.hindsight_memories.some((memory) => memory.document_id === result.record.document_id || memory.tags.includes(`experience:${result.record.document_id}`))) {
+        onShowToast('Outcome stored, but the future-task recall did not return its new memory.', 'error');
+      }
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : 'Outcome was not stored';
       setError(message);
@@ -310,7 +384,7 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
         method: 'POST',
         body: formData,
       });
-      onShowToast(`Hindsight document ${result.status}: ${result.document_id}`, 'success');
+      onShowToast(`Current RAG reference ${result.status}: ${result.document_id}`, 'success');
       setReferenceFile(null);
       setReferenceTitle('');
       setReferenceSource('');
@@ -332,14 +406,14 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
       <header className="flex flex-col justify-between gap-4 rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-5 shadow-xs md:flex-row md:items-end">
         <div className="max-w-3xl">
           <div className="mb-2 flex flex-wrap items-center gap-2">
-            <span className="rounded bg-primary-fixed px-2 py-1 font-mono-code text-[10px] uppercase text-primary">Hindsight-backed learning</span>
+            <span className="rounded bg-primary-fixed px-2 py-1 font-mono-code text-[10px] uppercase text-primary">Current knowledge + hindsight</span>
             <span className={`rounded px-2 py-1 font-mono-code text-[10px] uppercase ${scope === 'demo' ? 'bg-amber-100 text-amber-900' : 'bg-surface-container-high text-on-surface-variant'}`}>
-              {scope === 'demo' ? 'Synthetic demo organization' : 'All Hindsight bank records'}
+              {scope === 'demo' ? 'Synthetic org context' : 'All Hindsight bank records'}
             </span>
           </div>
-          <h1 className="font-headline-lg text-headline-lg text-on-surface">Organizational Memory Lab</h1>
+          <h1 className="font-headline-lg text-headline-lg text-on-surface">Organizational Memory</h1>
           <p className="mt-2 text-sm leading-relaxed text-on-surface-variant">
-            Compare a no-history recommendation with one grounded in actual Hindsight experiences. Record what happened so later tasks can use it.
+            Compare the current organizational context with previous outcomes, decisions, and lessons so the team can reason from both present facts and accumulated experience.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -353,9 +427,9 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
           <button onClick={() => void refresh()} disabled={loadingOverview} className="inline-flex h-9 items-center gap-2 rounded-lg border border-outline-variant/30 bg-surface px-3 text-xs font-semibold text-on-surface-variant disabled:opacity-50">
             {loadingOverview ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh live data
           </button>
-          {scope === 'demo' && (
+              {scope === 'demo' && (
             <button onClick={() => void seedDemo()} disabled={seeding} className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-xs font-semibold text-on-primary disabled:opacity-50">
-              {seeding ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />} Load synthetic organization
+              {seeding ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />} Seed synthetic experiences
             </button>
           )}
         </div>
@@ -367,7 +441,7 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
         </div>
       )}
 
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8" aria-label="Live Hindsight organization counts">
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8" aria-label="Live organizational memory counts">
         {[
           ['Projects', counts?.projects], ['Tasks', counts?.tasks], ['Employees', counts?.employees],
           ['Teams', counts?.teams], ['Experiences', counts?.experiences], ['Facts', overview?.memory_count],
@@ -426,36 +500,62 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
                   </article>
                   <article className="flex flex-col gap-3 rounded-2xl border border-primary/25 bg-primary/5 p-4 shadow-xs">
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 font-label-md text-label-md font-semibold text-on-surface"><Brain className="h-4 w-4 text-primary" /> With organizational memory</div>
+                      <div className="flex items-center gap-2 font-label-md text-label-md font-semibold text-on-surface"><Brain className="h-4 w-4 text-primary" /> Evidence-grounded recommendation</div>
                       <span className={`rounded-md px-2 py-1 font-mono-code text-[9px] ${comparison.memory_influence === 'used' ? 'bg-tertiary-fixed/40 text-tertiary' : 'bg-surface-container-high text-on-surface-variant'}`}>
-                        {comparison.memory_influence === 'used' ? `${comparison.retrieved_count} HINDSIGHT FACTS USED` : 'NO MEMORY USED'}
+                        {comparison.memory_influence === 'used' ? `${comparison.retrieved_count} SOURCES RETRIEVED` : 'NO EVIDENCE USED'}
                       </span>
                     </div>
-                    {comparison.memory_answer ? <p className="whitespace-pre-wrap text-xs leading-relaxed text-on-surface-variant">{comparison.memory_answer}</p> : <p className="text-xs leading-relaxed text-on-surface-variant">{comparison.retrieval_status === 'unavailable' ? 'Hindsight could not be reached. No memory-informed answer was generated.' : 'No relevant previous experience was found in Hindsight. The system did not invent one.'}</p>}
+                    {comparison.recommendation ? <p className="whitespace-pre-wrap text-xs leading-relaxed text-on-surface-variant">{comparison.recommendation}</p> : <p className="text-xs leading-relaxed text-on-surface-variant">{comparison.rag_message || comparison.hindsight_message || 'No evidence-grounded recommendation is available.'}</p>}
                   </article>
                 </div>
+
+                {learningProof && (
+                  <section className="rounded-xl border border-tertiary/25 bg-tertiary-fixed/20 p-4" aria-live="polite">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h2 className="font-label-md text-label-md font-semibold text-on-surface">Outcome → lesson → future retrieval</h2>
+                      <span className={`rounded px-2 py-1 font-mono-code text-[9px] font-semibold ${learningProof.futureFound ? 'bg-tertiary-fixed/50 text-tertiary' : 'bg-error-container text-on-error-container'}`}>
+                        {learningProof.futureFound ? 'NEW MEMORY RETRIEVED' : 'FUTURE RETRIEVAL NOT CONFIRMED'}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs font-semibold text-on-surface">{learningProof.title}</p>
+                    <dl className="mt-2 grid gap-2 text-xs text-on-surface-variant sm:grid-cols-2">
+                      <div><dt className="font-semibold text-on-surface">Action</dt><dd>{learningProof.action}</dd></div>
+                      <div><dt className="font-semibold text-on-surface">Actual outcome</dt><dd>{learningProof.outcome}</dd></div>
+                      <div className="sm:col-span-2"><dt className="font-semibold text-on-surface">Lesson</dt><dd>{learningProof.lesson}</dd></div>
+                      <div className="font-mono-code text-[10px]">Hindsight document: {learningProof.documentId}</div>
+                    </dl>
+                  </section>
+                )}
+
+                <section className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-4 shadow-xs">
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <div><h2 className="font-label-md text-label-md font-semibold text-on-surface">Current canonical state</h2><p className="mt-1 text-[10px] text-on-surface-variant">Current project records; historical outcomes do not overwrite this state.</p></div>
+                    <span className="font-mono-code text-[10px] text-outline">{comparison.current_state.length}</span>
+                  </div>
+                  {comparison.current_state.length ? <div className="grid gap-2">{comparison.current_state.map((item) => <article key={item.source_id} className="rounded-lg bg-surface-container-low p-3"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-xs font-semibold text-on-surface">{item.title}</h3><span className="font-mono-code text-[10px] text-outline">{item.source_id}</span></div><p className="mt-1 text-xs text-on-surface-variant">{item.summary}</p></article>)}</div> : <p className="rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant">No related canonical project state was found.</p>}
+                </section>
 
                 <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                   <section className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-4 shadow-xs">
                     <div className="mb-3 flex items-start justify-between gap-2">
-                      <div><h2 className="font-label-md text-label-md font-semibold text-on-surface">Current reference evidence</h2><p className="mt-1 text-[10px] text-on-surface-variant">Hindsight records tagged as current organization documents.</p></div>
+                      <div><h2 className="font-label-md text-label-md font-semibold text-on-surface">Current RAG knowledge</h2><p className="mt-1 text-[10px] text-on-surface-variant">Current standards retrieved from the separate RAG store.</p></div>
                       <span className="font-mono-code text-[10px] text-outline">{comparison.rag_memories.length}</span>
                     </div>
-                    {comparison.rag_memories.length ? <div className="grid gap-2">{comparison.rag_memories.map((memory, index) => <EvidenceCard key={memory.id || `${memory.title}-${index}`} memory={memory} />)}</div> : <p className="rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant">0 current reference facts retrieved.</p>}
+                    {comparison.rag_memories.length ? <div className="grid gap-2">{comparison.rag_memories.map((memory, index) => <EvidenceCard key={memory.id || `${memory.title}-${index}`} memory={memory} />)}</div> : <p className="rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant">{comparison.rag_message || 'No relevant current RAG knowledge was found.'}</p>}
                   </section>
                   <section className="rounded-2xl border border-primary/20 bg-primary/5 p-4 shadow-xs">
                     <div className="mb-3 flex items-start justify-between gap-2">
-                      <div><h2 className="font-label-md text-label-md font-semibold text-on-surface">Historical experience evidence</h2><p className="mt-1 text-[10px] text-on-surface-variant">Outcome and preference facts retrieved from Hindsight memory.</p></div>
+                      <div><h2 className="font-label-md text-label-md font-semibold text-on-surface">Historical Hindsight experience</h2><p className="mt-1 text-[10px] text-on-surface-variant">Past outcomes and lessons retrieved from Hindsight.</p></div>
                       <span className="font-mono-code text-[10px] text-outline">{comparison.hindsight_memories.length}</span>
                     </div>
-                    {comparison.hindsight_memories.length ? <div className="grid gap-2">{comparison.hindsight_memories.map((memory, index) => <EvidenceCard key={memory.id || `${memory.title}-${index}`} memory={memory} />)}</div> : <p className="rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant">No relevant previous experience was found.</p>}
+                    {comparison.hindsight_memories.length ? <div className="grid gap-2">{comparison.hindsight_memories.map((memory, index) => <EvidenceCard key={memory.id || `${memory.title}-${index}`} memory={memory} />)}</div> : <p className="rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant">{comparison.hindsight_message || 'No relevant previous experience was found.'}</p>}
                   </section>
                 </div>
 
                 <details className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-4 shadow-xs">
                   <summary className="flex cursor-pointer list-none items-center gap-2 font-label-md text-label-md font-semibold text-on-surface"><GitBranch className="h-4 w-4 text-primary" /> Data lineage for this comparison <ArrowDown className="ml-auto h-4 w-4 text-outline" /></summary>
                   <ol className="mt-3 grid gap-2 text-xs text-on-surface-variant sm:grid-cols-2">
-                    {['Task text received', `${comparison.rag_memories.length} current-reference facts from Hindsight`, `${comparison.hindsight_memories.length} historical experiences from Hindsight`, `Baseline generated: ${Boolean(comparison.baseline)}`, `Memory answer generated: ${Boolean(comparison.memory_answer)}`, `Memory influence: ${comparison.memory_influence}`].map((step, index) => (
+                    {['Task text received', `${comparison.current_state.length} canonical records: ${comparison.lineage.canonical_source_ids.join(', ') || 'none'}`, `${comparison.rag_memories.length} RAG records: ${comparison.lineage.rag_source_ids.join(', ') || 'none'}`, `${comparison.hindsight_memories.length} Hindsight records: ${comparison.lineage.hindsight_source_ids.join(', ') || 'none'}`, `Recommendation evidence IDs: ${comparison.lineage.recommendation_evidence_ids.join(', ') || 'none'}`, `Memory influence: ${comparison.memory_influence}`].map((step, index) => (
                       <li key={step} className="flex items-center gap-2 rounded-lg bg-surface-container-low p-2"><span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-surface-container-high font-mono-code text-[9px]">{index + 1}</span>{step}</li>
                     ))}
                   </ol>
@@ -475,6 +575,12 @@ export const MemoryLab: React.FC<MemoryLabProps> = ({ initialQuery, onShowToast 
                     <form onSubmit={submitOutcome} className="mt-4 grid gap-3 sm:grid-cols-2">
                       <label className="grid gap-1 text-[11px] font-semibold text-on-surface">Stable task ID (optional; reuse to revise a record)
                         <input value={outcome.scenario_id} onChange={(event) => setOutcome({ ...outcome, scenario_id: event.target.value })} className="h-9 rounded-lg border border-outline-variant/30 bg-surface px-2.5 font-mono-code text-xs font-normal" placeholder="TASK-AUTH-017" />
+                      </label>
+                      <label className="grid gap-1 text-[11px] font-semibold text-on-surface">Canonical project
+                        <select value={projectId} onChange={(event) => setProjectId(event.target.value)} className="h-9 rounded-lg border border-outline-variant/30 bg-surface px-2.5 text-xs font-normal">
+                          <option value="">No project linked</option>
+                          {projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.id}</option>)}
+                        </select>
                       </label>
                       <label className="grid gap-1 text-[11px] font-semibold text-on-surface">Experience title
                         <input required minLength={5} value={outcome.case_title} onChange={(event) => setOutcome({ ...outcome, case_title: event.target.value })} className="h-9 rounded-lg border border-outline-variant/30 bg-surface px-2.5 text-xs font-normal" />

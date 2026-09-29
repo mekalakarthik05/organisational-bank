@@ -6,10 +6,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.services.memory_learning import MemoryLearningService
+from app.services.canonical_org import get_organization_store
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 learning = MemoryLearningService()
+organization = get_organization_store()
 
 
 class CompareRequest(BaseModel):
@@ -19,6 +21,7 @@ class CompareRequest(BaseModel):
 
 class OutcomeRequest(BaseModel):
     scenario_id: str | None = Field(None, min_length=3, max_length=100)
+    project_id: str | None = Field(None, min_length=3, max_length=100)
     version: int = Field(default=1, ge=1)
     case_title: str = Field(min_length=5, max_length=160)
     case_context: str = Field(min_length=25, max_length=2500)
@@ -76,6 +79,22 @@ async def record_outcome(request: OutcomeRequest):
         raise HTTPException(422, "Preference should describe a durable, explicit preference")
 
     record = request.model_dump()
+    if request.project_id:
+        project = next(
+            (item for item in organization.list_projects() if item["id"] == request.project_id),
+            None,
+        )
+        if project is None:
+            raise HTTPException(422, "Project ID is not present in the canonical organization")
+        department = next(
+            (item for item in organization.get_overview()["departments"] if item["id"] == project["department_id"]),
+            None,
+        )
+        record.update({
+            "project_name": project["name"],
+            "owner_id": project["owner_id"],
+            "department": department["name"] if department else "",
+        })
     record["title"] = request.case_title.strip()
     record["case_context"] = request.case_context.strip()
     record["initial_recommendation"] = request.initial_recommendation.strip()

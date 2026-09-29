@@ -1,18 +1,87 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavigationPath, ProjectItem } from '../types';
-import { INITIAL_PROJECTS, INITIAL_DECISIONS, INITIAL_KNOWLEDGE_ITEMS } from '../data/mockData';
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/$/, '');
+
+async function api<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.detail || `Request failed (${response.status})`);
+  }
+  return payload as T;
+}
 
 interface ProjectsViewProps {
   onNavigate: (path: NavigationPath, queryParam?: string) => void;
   onShowToast: (msg: string) => void;
 }
 
+type ProjectHistoryValue = string | string[] | Array<Record<string, string>>;
+
+interface ProjectHistory {
+  [key: string]: ProjectHistoryValue;
+}
+
+interface LiveProject extends ProjectItem {
+  history: ProjectHistory;
+  tasks: string[];
+  technology_stack: string[];
+}
+
+interface RagDocument {
+  id: string;
+  title: string;
+  project_id: string | null;
+  source_reference: string;
+}
+
 export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowToast }) => {
-  const [projects] = useState<ProjectItem[]>(INITIAL_PROJECTS);
+  const [projects, setProjects] = useState<LiveProject[]>([]);
+  const [ragDocuments, setRagDocuments] = useState<RagDocument[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedTier, setSelectedTier] = useState<string>('All');
   const [selectedStatus, setSelectedStatus] = useState<string>('All');
-  const [selectedProject, setSelectedProject] = useState<ProjectItem | null>(null);
+  const [selectedProject, setSelectedProject] = useState<LiveProject | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    Promise.all([
+      api<{ projects: Array<{ id: string; code: string; name: string; status: string; requirements: string; technology_stack: string[]; tasks: string[]; department_id: string; department_name: string; owner_id: string; owner_name: string; history: ProjectHistory; }> }>(`/organization/projects`),
+      api<{ items: RagDocument[] }>('/documents'),
+      api<{ people: Array<{ id: string; name: string }> }>('/organization/people'),
+    ])
+      .then(([result, documents, people]) => {
+        if (!isMounted) return;
+        const peopleById = new Map(people.people.map((person) => [person.id, person.name]));
+        setRagDocuments(documents.items);
+        const mapped = result.projects.map((project) => ({
+          id: project.id,
+          code: project.code,
+          name: project.name,
+          description: project.requirements,
+          lead: project.owner_name || peopleById.get(project.owner_id) || project.owner_id,
+          leadAvatar: '',
+          status: project.status,
+          department: project.department_name || project.department_id,
+          documentsCount: project.tasks.length,
+          decisionsCount: Array.isArray(project.history.related_project_ids) ? project.history.related_project_ids.length : 0,
+          lastUpdated: 'Canonical database',
+          history: project.history,
+          tasks: project.tasks,
+          technology_stack: project.technology_stack,
+        }));
+        setProjects(mapped);
+      })
+      .catch((error: unknown) => {
+        if (isMounted) setLoadError(error instanceof Error ? error.message : 'Canonical projects are unavailable');
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const filteredProjects = projects.filter((p) => {
     const matchesSearch =
@@ -21,10 +90,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
       p.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.lead.toLowerCase().includes(searchQuery.toLowerCase());
 
-    const matchesTier = selectedTier === 'All' ? true : p.tier === selectedTier;
-    const matchesStatus = selectedStatus === 'All' ? true : p.status.includes(selectedStatus);
+    const matchesStatus = selectedStatus === 'All' ? true : p.status === selectedStatus;
 
-    return matchesSearch && matchesTier && matchesStatus;
+    return matchesSearch && matchesStatus;
   });
 
   return (
@@ -35,13 +103,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
           <div>
             <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-primary-fixed/30 text-primary font-mono-code text-[11px] font-semibold mb-2">
               <span className="material-symbols-outlined text-[13px]">folder_supervised</span>
-              <span>ORGANIZATIONAL INITIATIVES · ACTIVE NODES</span>
+              <span>CANONICAL PROJECT HISTORY · {projects.length} PROJECTS</span>
             </div>
             <h1 className="text-2xl lg:text-3xl font-bold text-on-surface tracking-tight font-display">
               Projects & Strategic Initiatives
             </h1>
             <p className="text-sm text-on-surface-variant mt-1">
-              Cross-functional initiatives grounded in institutional memory, verified ADRs, and live specs.
+              Canonical project state, active tasks, owners, and connected project histories.
             </p>
           </div>
 
@@ -54,11 +122,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
               <span>Ingest Initiative Docs</span>
             </button>
             <button
-              onClick={() => onNavigate('ask', 'Compare architecture across Project Phoenix and Project Atlas')}
+              onClick={() => onNavigate('ask', 'Compare Phoenix Data Migration and Atlas Analytics Platform database migration histories')}
               className="px-4 py-2 rounded-lg bg-primary hover:bg-primary/95 text-on-primary text-xs font-semibold flex items-center gap-2 shadow-sm transition-all cursor-pointer"
             >
               <span className="material-symbols-outlined text-[16px]">neurology</span>
-              <span>Ask Brain About Projects</span>
+              <span>Ask the Brain About Projects</span>
             </button>
           </div>
         </div>
@@ -78,32 +146,12 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
             />
           </div>
 
-          {/* Tier Filter */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] font-semibold text-outline uppercase tracking-wider font-mono-code mr-1">
-              Tier:
-            </span>
-            {['All', 'Tier-1 Core', 'Tier-2 Critical'].map((tier) => (
-              <button
-                key={tier}
-                onClick={() => setSelectedTier(tier)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                  selectedTier === tier
-                    ? 'bg-primary text-on-primary font-semibold shadow-xs'
-                    : 'bg-surface-container-low hover:bg-surface-container text-on-surface-variant border border-outline-variant/20'
-                }`}
-              >
-                {tier}
-              </button>
-            ))}
-          </div>
-
           {/* Status Filter */}
           <div className="flex items-center gap-1.5">
             <span className="text-[11px] font-semibold text-outline uppercase tracking-wider font-mono-code mr-1">
               Status:
             </span>
-            {['All', 'Active', 'Beta', 'In Review'].map((st) => (
+            {['All', ...new Set(projects.map((project) => project.status))].map((st) => (
               <button
                 key={st}
                 onClick={() => setSelectedStatus(st)}
@@ -123,15 +171,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
       {/* Main Grid */}
       <section className="px-4 sm:px-6 lg:px-8 py-5 max-w-7xl mx-auto w-full">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {filteredProjects.map((project) => {
-            const linkedDecisions = INITIAL_DECISIONS.filter(
-              (d) => d.project.toLowerCase() === project.name.toLowerCase()
-            );
-            const linkedDocs = INITIAL_KNOWLEDGE_ITEMS.filter(
-              (k) => k.project.toLowerCase() === project.name.toLowerCase()
-            );
-
-            return (
+          {loadError && <p role="alert" className="col-span-full rounded-lg border border-error/20 bg-error-container/40 p-3 text-sm text-on-error-container">{loadError}</p>}
+          {filteredProjects.map((project) => (
               <div
                 key={project.id}
                 onClick={() => setSelectedProject(project)}
@@ -169,7 +210,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
                   <div className="mt-4 pt-3 border-t border-outline-variant/15 flex items-center justify-between text-xs">
                     <span className="text-outline text-[11px] font-medium">{project.department}</span>
                     <span className="px-2 py-0.5 rounded bg-surface-container-high text-on-surface text-[10px] font-semibold">
-                      {project.tier}
+                      {project.tasks.length} tasks · {project.decisionsCount} linked projects
                     </span>
                   </div>
                 </div>
@@ -177,14 +218,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
                 <div className="mt-5 pt-3 border-t border-outline-variant/15">
                   <div className="flex items-center justify-between mb-3 text-xs">
                     <div className="flex items-center gap-2">
-                      <img
-                        src={project.leadAvatar}
-                        alt={project.lead}
-                        className="w-6 h-6 rounded-full object-cover border border-outline-variant/30"
-                      />
+                      <span className="grid h-6 w-6 place-items-center rounded-full bg-surface-container-high text-[9px] font-bold text-on-surface-variant">{project.lead.slice(0, 2).toUpperCase()}</span>
                       <div className="flex flex-col">
                         <span className="text-[11px] font-medium text-on-surface">{project.lead}</span>
-                        <span className="text-[9px] text-outline">Lead Architect</span>
+                        <span className="text-[9px] text-outline">Canonical owner</span>
                       </div>
                     </div>
                     <span className="text-[10px] text-outline font-mono-code">{project.lastUpdated}</span>
@@ -193,11 +230,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
                   <div className="grid grid-cols-2 gap-2 bg-surface-container-low rounded-lg p-2 text-center text-xs">
                     <div>
                       <div className="font-bold text-on-surface font-mono-code">{project.documentsCount}</div>
-                      <div className="text-[10px] text-outline">Ingested Specs</div>
+                      <div className="text-[10px] text-outline">Canonical tasks</div>
                     </div>
                     <div className="border-l border-outline-variant/20">
                       <div className="font-bold text-primary font-mono-code">{project.decisionsCount}</div>
-                      <div className="text-[10px] text-outline">Ratified ADRs</div>
+                      <div className="text-[10px] text-outline">Related projects</div>
                     </div>
                   </div>
 
@@ -224,8 +261,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
                   </div>
                 </div>
               </div>
-            );
-          })}
+          ))}
         </div>
       </section>
 
@@ -241,9 +277,6 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
                   </span>
                   <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-tertiary-fixed/40 text-tertiary">
                     {selectedProject.status}
-                  </span>
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded bg-surface-container text-on-surface">
-                    {selectedProject.tier}
                   </span>
                 </div>
                 <h2 className="text-xl font-bold text-on-surface mt-2">{selectedProject.name}</h2>
@@ -262,11 +295,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
                 <div>
                   <span className="text-[10px] text-outline uppercase font-mono-code">Engineering Lead</span>
                   <div className="flex items-center gap-2 mt-1">
-                    <img
-                      src={selectedProject.leadAvatar}
-                      alt={selectedProject.lead}
-                      className="w-5 h-5 rounded-full object-cover"
-                    />
+                    <span className="grid h-5 w-5 place-items-center rounded-full bg-surface-container-high text-[8px] font-bold text-on-surface-variant">{selectedProject.lead.slice(0, 2).toUpperCase()}</span>
                     <span className="font-semibold text-on-surface">{selectedProject.lead}</span>
                   </div>
                 </div>
@@ -275,77 +304,44 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({ onNavigate, onShowTo
                   <p className="font-semibold text-on-surface mt-1">{selectedProject.department}</p>
                 </div>
                 <div>
-                  <span className="text-[10px] text-outline uppercase font-mono-code">Knowledge Sync</span>
+                  <span className="text-[10px] text-outline uppercase font-mono-code">Data source</span>
                   <p className="font-semibold text-on-surface mt-1">{selectedProject.lastUpdated}</p>
                 </div>
               </div>
 
-              <div>
+              <section>
                 <h4 className="font-bold text-on-surface uppercase tracking-wider text-[11px] mb-2 font-mono-code text-outline">
-                  Linked Architecture Decision Records (ADRs)
+                  Canonical project history
                 </h4>
-                <div className="space-y-2">
-                  {INITIAL_DECISIONS.filter(
-                    (d) => d.project.toLowerCase() === selectedProject.name.toLowerCase()
-                  ).length > 0 ? (
-                    INITIAL_DECISIONS.filter(
-                      (d) => d.project.toLowerCase() === selectedProject.name.toLowerCase()
-                    ).map((adr) => (
-                      <div
-                        key={adr.id}
-                        onClick={() => {
-                          setSelectedProject(null);
-                          onNavigate('decisions');
-                        }}
-                        className="p-3 rounded-lg bg-surface-container-low hover:bg-surface-container border border-outline-variant/20 flex items-center justify-between cursor-pointer transition-colors"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono-code font-bold text-primary">{adr.adrNumber}</span>
-                          <div>
-                            <p className="font-semibold text-on-surface">{adr.title}</p>
-                            <p className="text-[11px] text-outline mt-0.5 line-clamp-1">{adr.summary}</p>
-                          </div>
-                        </div>
-                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-tertiary-fixed/40 text-tertiary shrink-0">
-                          {adr.status}
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="p-3 rounded-lg bg-surface-container-low text-outline text-center">
-                      No specific ADRs explicitly bound yet. Ingestion pending.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div>
-                <h4 className="font-bold text-on-surface uppercase tracking-wider text-[11px] mb-2 font-mono-code text-outline">
-                  Related Knowledge Lake Artifacts
-                </h4>
-                <div className="space-y-2">
-                  {INITIAL_KNOWLEDGE_ITEMS.filter(
-                    (k) => k.project.toLowerCase() === selectedProject.name.toLowerCase()
-                  ).map((k) => (
-                    <div
-                      key={k.id}
-                      onClick={() => {
-                        setSelectedProject(null);
-                        onNavigate('knowledge');
-                      }}
-                      className="p-3 rounded-lg bg-surface-container-low hover:bg-surface-container border border-outline-variant/20 flex items-center justify-between cursor-pointer transition-colors"
-                    >
-                      <div>
-                        <span className="text-[10px] font-bold text-secondary uppercase font-mono-code">
-                          {k.type}
-                        </span>
-                        <p className="font-semibold text-on-surface mt-0.5">{k.title}</p>
-                      </div>
-                      <span className="material-symbols-outlined text-[16px] text-outline">chevron_right</span>
+                <dl className="grid gap-2">
+                  {Object.entries(selectedProject.history).map(([field, value]) => (
+                    <div key={field} className="rounded-lg bg-surface-container-low p-3">
+                      <dt className="font-semibold capitalize text-on-surface">{field.replaceAll('_', ' ')}</dt>
+                      <dd className="mt-1 whitespace-pre-wrap text-on-surface-variant">{Array.isArray(value) ? value.map((entry) => typeof entry === 'string' ? entry : `${entry.id}: ${entry.title} (${entry.status})`).join(', ') : value}</dd>
                     </div>
                   ))}
+                </dl>
+              </section>
+
+              <section>
+                <h4 className="font-bold text-on-surface uppercase tracking-wider text-[11px] mb-2 font-mono-code text-outline">
+                  Current RAG standards
+                </h4>
+                <div className="grid gap-2">
+                  {ragDocuments.filter((document) => document.project_id === selectedProject.id).map((document) => (
+                    <article key={document.id} className="rounded-lg border border-outline-variant/20 bg-surface-container-low p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h5 className="font-semibold text-on-surface">{document.title}</h5>
+                        <span className="font-mono-code text-[10px] text-outline">{document.id}</span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-on-surface-variant">{document.source_reference || 'Source reference not recorded'}</p>
+                    </article>
+                  ))}
+                  {!ragDocuments.some((document) => document.project_id === selectedProject.id) && (
+                    <p className="rounded-lg bg-surface-container-low p-3 text-on-surface-variant">No current RAG document is linked to this project.</p>
+                  )}
                 </div>
-              </div>
+              </section>
             </div>
 
             <div className="p-4 border-t border-outline-variant/20 bg-surface-container-low flex items-center justify-between">

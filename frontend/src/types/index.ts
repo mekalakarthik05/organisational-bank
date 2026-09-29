@@ -25,6 +25,11 @@ export interface KnowledgeItem {
   updatedAt: string;
   tag: string;
   verified: boolean;
+  projectId?: string | null;
+  department?: string;
+  source?: string;
+  sourceReference?: string;
+  status?: string;
   bookmarked?: boolean;
   stats?: {
     diagrams?: number;
@@ -40,9 +45,9 @@ export interface ProjectItem {
   description: string;
   lead: string;
   leadAvatar: string;
-  status: 'Active · M3' | 'Active · Beta' | 'In Review' | 'Planning';
+  status: string;
   department: string;
-  tier: 'Tier-1 Core' | 'Tier-2 Critical' | 'Standard';
+  tier?: 'Tier-1 Core' | 'Tier-2 Critical' | 'Standard';
   documentsCount: number;
   decisionsCount: number;
   lastUpdated: string;

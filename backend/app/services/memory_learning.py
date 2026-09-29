@@ -10,6 +10,9 @@ from app.config import settings
 from app.services.demo_dataset import SYNTHETIC_EXPERIENCES, SYNTHETIC_ORGANIZATION
 from app.services.hindsight_client import HindsightClient
 from app.services.llm import llm
+from app.services.canonical_org import OrganizationalBrainStore, PROJECTS
+from app.services.organizational_seed import ADDITIONAL_HINDSIGHT_EXPERIENCES, DECISION_EXPERIENCE_IDS
+from app.services.rag_knowledge import RAGKnowledgeStore
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +151,8 @@ class MemoryLearningService:
     def __init__(self):
         self.hindsight = HindsightClient()
         self.bank_id = settings.HINDSIGHT_BANK_ID
+        self.rag = RAGKnowledgeStore()
+        self.organization = OrganizationalBrainStore()
 
     @staticmethod
     def _validate_demo_dataset() -> None:
@@ -348,23 +353,39 @@ class MemoryLearningService:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 raise
+        existing_needs_lineage_update = False
         if existing_document:
-            if existing_document.get("content_hash") == content_hash:
+            existing_metadata = existing_document.get("document_metadata") or {}
+            existing_tags = existing_document.get("tags") or existing_metadata.get("tags") or []
+            has_stable_lineage = f"experience:{document_id}" in existing_tags
+            has_decision_tag = (
+                record.get("scenario_id") not in DECISION_EXPERIENCE_IDS
+                or "experience:decision" in existing_tags
+            )
+            if existing_document.get("content_hash") == content_hash and has_stable_lineage and has_decision_tag:
                 return {
                     "document_id": document_id,
                     "title": record["title"],
                     "status": "unchanged",
                     "version": (existing_document.get("document_metadata") or {}).get("version", str(version)),
                 }
-            previous_metadata = existing_document.get("document_metadata") or {}
+            existing_needs_lineage_update = (
+                existing_document.get("content_hash") == content_hash
+                and (not has_stable_lineage or not has_decision_tag)
+            )
+            previous_metadata = existing_metadata
             try:
-                version = max(version, int(previous_metadata.get("version", "1")) + 1)
+                if not existing_needs_lineage_update:
+                    version = max(version, int(previous_metadata.get("version", "1")) + 1)
             except (TypeError, ValueError):
                 version = max(version, 2)
         record["version"] = version
         tags = list(record.get("tags", []))
+        if record.get("scenario_id") in DECISION_EXPERIENCE_IDS:
+            tags.append("experience:decision")
         tags.extend(["learning:outcome", "demo:synthetic"] if synthetic else
                     ["learning:outcome", "source:user-feedback"])
+        tags.append(f"outcome:{record['outcome_status']}")
         company_id = record.get("company_id") or (SYNTHETIC_ORGANIZATION["id"] if synthetic else None)
         if company_id:
             tags.append(f"company:{company_id}")
@@ -372,6 +393,7 @@ class MemoryLearningService:
             tags.append(f"project:{record['project_id']}")
         if record.get("scenario_id"):
             tags.append(f"task:{record['scenario_id']}")
+        tags.append(f"experience:{document_id}")
         if record.get("owner_id"):
             tags.append(f"employee:{record['owner_id']}")
         tags.extend(f"employee:{employee_id}" for employee_id in record.get("contributor_ids", []))
@@ -435,43 +457,54 @@ class MemoryLearningService:
         seeded = []
         skipped = 0
         updated = 0
-        registry_content, registry_metadata = self._organization_registry()
-        registry_id = registry_metadata["document_id"]
-        registry_hash = hashlib.sha256(registry_content.encode("utf-8")).hexdigest()
-        registry_existing = existing_by_id.get(registry_id)
-        if registry_existing and registry_existing.get("content_hash") == registry_hash:
-            skipped += 1
-        else:
-            result = await self.hindsight.store_knowledge(
-                bank_id=self.bank_id,
-                content=registry_content,
-                metadata=registry_metadata,
+        project_by_id = {project["id"]: project for project in PROJECTS}
+        project_aliases = {
+            "PRJ-AUTH-01": "PRJ-AUTH", "PRJ-PAY-02": "PRJ-PAY",
+            "PRJ-REC-03": "PRJ-REC", "PRJ-DOC-04": "PRJ-DOC",
+            "PRJ-DATA-05": "PRJ-DATA", "PRJ-REL-06": "PRJ-REL",
+        }
+        histories = [*SYNTHETIC_EXPERIENCES, *ADDITIONAL_HINDSIGHT_EXPERIENCES]
+        for source_record in histories:
+            canonical_project_id = project_aliases.get(
+                source_record.get("project_id"), source_record.get("project_id")
             )
-            if result.get("success") is False:
-                raise RuntimeError("Hindsight did not confirm retaining the organization registry")
-            seeded.append({"document_id": registry_id, "title": registry_metadata["title"], "kind": "current_reference"})
-            if registry_existing:
-                updated += 1
-        for record in SYNTHETIC_EXPERIENCES:
+            canonical_project = project_by_id.get(canonical_project_id, {})
             people = {person["id"]: person["name"]
                       for person in SYNTHETIC_ORGANIZATION["employees"]}
             record = {
-                **record,
+                **source_record,
+                "project_id": canonical_project_id,
+                "project_name": canonical_project.get("name", source_record.get("project_name", "")),
                 "company_id": SYNTHETIC_ORGANIZATION["id"],
                 "company_name": SYNTHETIC_ORGANIZATION["name"],
-                "owner_name": people.get(record.get("owner_id"), "Unknown synthetic owner"),
+                "owner_name": people.get(source_record.get("owner_id"), "Unknown synthetic owner"),
                 "contributor_names": [
                     people.get(person_id, "Unknown synthetic contributor")
-                    for person_id in record.get("contributor_ids", [])
+                    for person_id in source_record.get("contributor_ids", [])
                 ],
-                "source_reference": "Synthetic Nexus demo dataset v1; fictional authored data",
-                "reliability": "synthetic demo scenario; not independently verified",
+                "source_reference": source_record.get("source_reference") or
+                    "Synthetic organizational history authored for this application",
+                "reliability": source_record.get("reliability") or
+                    "synthetic demo scenario; not independently verified",
             }
             content = self._content(record, synthetic=True)
             document_id = self._document_id(record, content)
             existing_document = existing_by_id.get(document_id)
             digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            if existing_document and existing_document.get("content_hash") == digest:
+            existing_tags = set(
+                (existing_document or {}).get("tags")
+                or ((existing_document or {}).get("document_metadata") or {}).get("tags")
+                or []
+            )
+            needs_decision_tag = (
+                record.get("scenario_id") in DECISION_EXPERIENCE_IDS
+                and "experience:decision" not in existing_tags
+            )
+            if (
+                existing_document
+                and existing_document.get("content_hash") == digest
+                and not needs_decision_tag
+            ):
                 skipped += 1
                 continue
             result = await self.record_outcome(record, synthetic=True)
@@ -486,35 +519,48 @@ class MemoryLearningService:
         }
 
     async def compare(self, case_context: str, scope: str = "demo") -> dict[str, Any]:
-        experience_tags = [DEMO_COMPANY_TAG] if scope == "demo" else ["learning:outcome"]
+        experience_tags = (
+            [DEMO_COMPANY_TAG, "learning:outcome"]
+            if scope == "demo" else ["learning:outcome"]
+        )
+        experience_tags_match = "all_strict" if scope == "demo" else "any_strict"
         retrieval_errors = []
         try:
-            reference_memories = await self.hindsight.search_memories(
-                bank_id=self.bank_id,
-                query=case_context,
-                limit=4,
-                tags=["source:organization"],
-                tags_match="any_strict",
-            )
+            reference_memories = self.rag.search(case_context, limit=8)
         except Exception as exc:
-            logger.exception("Hindsight reference recall failed during comparison")
+            logger.exception("Current RAG retrieval failed during comparison")
             reference_memories = []
             retrieval_errors.append(type(exc).__name__)
         try:
             experience_memories = await self.hindsight.search_memories(
                 bank_id=self.bank_id,
                 query=case_context,
-                limit=4,
+                limit=20,
                 tags=experience_tags,
-                tags_match="any_strict",
+                tags_match=experience_tags_match,
             )
         except Exception as exc:
             logger.exception("Hindsight experience recall failed during comparison")
             experience_memories = []
             retrieval_errors.append(type(exc).__name__)
-        reference_memories = self._dedupe_memories(reference_memories)[:4]
-        experience_memories = self._dedupe_memories(experience_memories)[:4]
+        reference_memories = self._dedupe_memories(reference_memories)[:8]
+        experience_memories = self._dedupe_memories(experience_memories)[:20]
         memories = self._dedupe_memories(reference_memories + experience_memories)
+        canonical_projects = self.organization.search_projects(case_context, limit=6)
+        canonical_context = [
+            {
+                "source_type": "canonical",
+                "source_id": project["id"],
+                "title": project["name"],
+                "project_id": project["id"],
+                "summary": (
+                    f"{project['name']} ({project['id']}) is currently {project['status']}. "
+                    f"Requirement: {project['requirements']} History: "
+                    f"{project['history'].get('problem', '')}"
+                ),
+            }
+            for project in canonical_projects
+        ]
 
         baseline_prompt = (
             "You are an organizational decision assistant. Give a concise, useful "
@@ -526,35 +572,87 @@ class MemoryLearningService:
 
         memory_answer = None
         memory_error = None
-        if memories:
+        if memories or canonical_context:
             memory_context = (
-                "CURRENT REFERENCE DOCUMENTS (RAG channel):\n"
+                "CURRENT CANONICAL ORGANIZATION STATE (authoritative current state):\n"
+                f"{self._format_canonical(canonical_context) or 'No related canonical projects retrieved.'}\n\n"
+                "CURRENT REFERENCE DOCUMENTS (separate RAG store):\n"
                 f"{self._format_memories(reference_memories) or 'No current reference documents retrieved.'}\n\n"
                 "HISTORICAL EXPERIENCES (Hindsight learning channel):\n"
                 f"{self._format_memories(experience_memories) or 'No previous experiences retrieved.'}"
             )
             memory_prompt = (
-                "You are an organizational decision assistant. Compare the current case "
-                "with the supplied Hindsight memories. Explain what is similar and what "
-                "differs, use prior outcomes and explicitly stated preferences only when "
-                "relevant, and explain how they do or do not change the recommendation. "
-                "Cite memory titles. Any record marked SYNTHETIC DEMO is fictional test "
-                "data: call it synthetic and never present it as company policy or a real "
-                "incident. Do not overstate confidence or infer unstated preferences.\n\n"
-                f"Retrieved Hindsight memories:\n{memory_context}"
+                "You are an organizational decision assistant. Separate current canonical "
+                "state, current RAG guidance, and historical Hindsight experience. Treat "
+                "canonical state and current RAG as current truth; Hindsight is historical "
+                "evidence and must never overwrite current state or policy. Compare the "
+                "current case with retrieved evidence, state concrete similarities and "
+                "differences, distinguish successful from failed approaches, account for "
+                "the supplied current constraints, then recommend only what the retrieved "
+                "evidence supports. Cite the stable source ID and title for each material "
+                "claim. Never claim a source was used unless it appears below. Records "
+                "marked SYNTHETIC DEMO are fictional examples, not real incidents or policy. "
+                "When evidence conflicts, preserve current canonical/RAG information and "
+                "describe the historical difference explicitly. Do not infer preferences.\n\n"
+                f"Retrieved evidence:\n{memory_context}"
             )
             memory_answer, memory_error = await self._generate(memory_prompt, case_context)
+
+        recommendation = memory_answer or self._evidence_recommendation(
+            reference_memories, experience_memories, canonical_context
+        )
+        retrieved_project_ids = list(dict.fromkeys(
+            tag.removeprefix("project:")
+            for memory in experience_memories for tag in memory.get("tags", [])
+            if tag.startswith("project:")
+        ))
+        rag_message = "" if reference_memories else "No relevant current organizational documentation was found."
+        hindsight_message = "" if experience_memories else "No verified organizational experience was found for this problem."
 
         return {
             "case_context": case_context,
             "scope": scope,
+            "current_state": canonical_context,
+            "canonical_projects": canonical_projects,
             "baseline": baseline,
             "memory_answer": memory_answer,
+            "reasoning": memory_answer or recommendation,
+            "recommendation": recommendation,
+            "rag_message": rag_message,
+            "hindsight_message": hindsight_message,
             "rag_memories": [self._memory_summary(memory) for memory in reference_memories],
             "hindsight_memories": [self._memory_summary(memory) for memory in experience_memories],
             "memories": [self._memory_summary(memory) for memory in memories],
-            "retrieved_count": len(memories),
-            "memory_influence": "used" if memories and memory_answer else "none",
+            "related_project_ids": retrieved_project_ids,
+            "evidence": [
+                {"source_type": "canonical", **item} for item in canonical_context
+            ] + [
+                {"source_type": "rag", "source_id": item.get("id"), "title": item.get("title"),
+                 "document_id": item.get("document_id"), "project_id": item.get("project_id")}
+                for item in reference_memories
+            ] + [
+                {"source_type": "hindsight", "source_id": item.get("id"),
+                 "title": self._memory_summary(item)["title"],
+                 "document_id": item.get("document_id"),
+                 "project_id": next((tag.removeprefix("project:") for tag in item.get("tags", []) if tag.startswith("project:")), None)}
+                for item in experience_memories
+            ],
+            "lineage": {
+                "input_id": "problem-" + hashlib.sha256(case_context.encode("utf-8")).hexdigest()[:16],
+                "canonical_source_ids": [item["source_id"] for item in canonical_context],
+                "rag_source_ids": [item.get("id") for item in reference_memories],
+                "hindsight_source_ids": [item.get("id") for item in experience_memories],
+                "recommendation_evidence_ids": (
+                    [item["source_id"] for item in canonical_context]
+                    + [item.get("id") for item in memories]
+                ),
+            },
+            "confidence": "evidence-backed" if memories or canonical_context else "insufficient-evidence",
+            "limitations": [
+                "Historical outcomes are synthetic demo experiences, not verified production incidents."
+            ] if any(self._memory_summary(item)["synthetic_demo"] for item in experience_memories) else [],
+            "retrieved_count": len(memories) + len(canonical_context),
+            "memory_influence": "used" if memories or canonical_context else "none",
             "retrieval_status": (
                 "unavailable" if len(retrieval_errors) == 2
                 else "partial" if retrieval_errors else "ok"
@@ -564,6 +662,61 @@ class MemoryLearningService:
                 error for error in (baseline_error, memory_error) if error
             ],
         }
+
+    @staticmethod
+    def _evidence_recommendation(
+        rag_memories: list[dict[str, Any]],
+        experience_memories: list[dict[str, Any]],
+        canonical_context: list[dict[str, Any]],
+    ) -> str:
+        if not rag_memories and not experience_memories and not canonical_context:
+            return (
+                "No evidence-grounded recommendation is available because no relevant "
+                "current guidance or historical experience was retrieved."
+            )
+        successful = [
+            memory for memory in experience_memories
+            if "outcome:success" in (memory.get("tags") or [])
+        ]
+        failed = [
+            memory for memory in experience_memories
+            if "outcome:failure" in (memory.get("tags") or [])
+        ]
+        parts = []
+        if successful:
+            parts.append(
+                "Retrieved successful experience to consider: "
+                + " ".join(memory.get("text", "") for memory in successful[:2])
+            )
+        if failed:
+            parts.append(
+                "Avoid repeating the retrieved failed approach: "
+                + " ".join(memory.get("text", "") for memory in failed[:2])
+            )
+        if rag_memories:
+            parts.append(
+                "Current guidance retrieved: "
+                + " ".join(memory.get("text") or memory.get("content", "") for memory in rag_memories[:2])
+            )
+        if canonical_context:
+            parts.append(
+                "Current project state retrieved: "
+                + " ".join(item["summary"] for item in canonical_context[:3])
+            )
+        if not successful and not failed and experience_memories:
+            parts.append(
+                "Historical evidence retrieved for comparison: "
+                + " ".join(memory.get("text", "") for memory in experience_memories[:2])
+            )
+        parts.append("Validate the approach against the current project's constraints before acting.")
+        return " ".join(part for part in parts if part).strip()
+
+    @staticmethod
+    def _format_canonical(records: list[dict[str, Any]]) -> str:
+        return "\n\n".join(
+            f"Project {record['source_id']}: {record['title']}\n{record['summary']}"
+            for record in records
+        )
 
     async def _generate(self, system: str, user: str) -> tuple[str | None, str | None]:
         try:
@@ -583,7 +736,7 @@ class MemoryLearningService:
             title = metadata.get("title", "Untitled Hindsight memory")
             tags = ", ".join(memory.get("tags") or [])
             items.append(
-                f"Memory {index}: {title}\n"
+                f"Memory {index} [ID: {memory.get('id') or memory.get('document_id') or metadata.get('document_id') or 'unknown'}]: {title}\n"
                 f"Type: {memory.get('type', 'unknown')}\n"
                 f"Context: {memory.get('context') or ''}\n"
                 f"Tags: {tags}\n"
@@ -596,10 +749,19 @@ class MemoryLearningService:
         metadata = memory.get("metadata") or {}
         scores = memory.get("scores") or {}
         tags = memory.get("tags") or []
-        title = metadata.get("title")
+        title = memory.get("title") or metadata.get("title")
+        if not title:
+            task_tag = next((tag for tag in tags if tag.startswith("task:")), None)
+            if task_tag:
+                title = task_tag.removeprefix("task:").replace("-", " ").title()
+            if not title:
+                scenario_tag = next((tag for tag in tags if tag.startswith("scenario:")), None)
+                title = scenario_tag.removeprefix("scenario:").replace("-", " ").title() if scenario_tag else "Hindsight memory"
         if not title:
             scenario_tag = next((tag for tag in tags if tag.startswith("scenario:")), None)
             title = scenario_tag.removeprefix("scenario:").replace("-", " ").title() if scenario_tag else "Hindsight memory"
+        project_tag = next((tag for tag in tags if tag.startswith("project:")), None)
+        experience_tag = next((tag for tag in tags if tag.startswith("experience:")), None)
         outcome_status = metadata.get("outcome_status") or next(
             (tag.removeprefix("outcome:") for tag in tags if tag.startswith("outcome:")),
             None,
@@ -615,10 +777,16 @@ class MemoryLearningService:
             ),
             "context": memory.get("context"),
             "tags": tags,
-            "document_id": memory.get("document_id") or metadata.get("document_id"),
+            "document_id": memory.get("document_id") or metadata.get("document_id") or (
+                experience_tag.removeprefix("experience:") if experience_tag else None
+            ),
+            "project_id": metadata.get("project_id") or (
+                project_tag.removeprefix("project:") if project_tag else None
+            ),
             "mentioned_at": memory.get("mentioned_at") or memory.get("date"),
             "outcome_status": outcome_status,
             "source": metadata.get("source") or ("synthetic_demo_dataset" if synthetic_demo else None),
+            "source_reference": metadata.get("source_reference"),
             "synthetic_demo": synthetic_demo,
             "final_score": scores.get("final"),
         }
@@ -636,13 +804,17 @@ class MemoryLearningService:
         return unique
 
     async def overview(self, scope: str = "demo") -> dict[str, Any]:
-        tags = [DEMO_COMPANY_TAG] if scope == "demo" else None
+        tags = (
+            [DEMO_COMPANY_TAG, "learning:outcome"]
+            if scope == "demo" else ["learning:outcome"]
+        )
+        tags_match = "all_strict" if scope == "demo" else "any_strict"
         stats = await self.hindsight.get_bank_stats(self.bank_id)
         documents = await self.hindsight.list_documents(
-            self.bank_id, limit=100, tags=tags, tags_match="any_strict"
+            self.bank_id, limit=100, tags=tags, tags_match=tags_match
         )
         memories = await self.hindsight.list_memories(
-            self.bank_id, limit=100, tags=tags, tags_match="any_strict"
+            self.bank_id, limit=100, tags=tags, tags_match=tags_match
         )
         timeline = []
         for document in documents.get("items", []):
@@ -673,24 +845,29 @@ class MemoryLearningService:
             status = document.get("outcome_status")
             if status:
                 outcome_counts[status] = outcome_counts.get(status, 0) + 1
+        canonical = self.organization.get_overview()
+        project_teams = {
+            project["history"].get("team")
+            for project in canonical["projects"]
+            if project["history"].get("team")
+        }
         return {
             "scope": scope,
             "bank_stats": stats,
             "document_count": documents.get("total", 0),
             "memory_count": memories.get("total", 0),
             "organization_counts": {
-                "projects": len({tag for tag in tags if tag.startswith("project:")}),
-                "employees": len({tag for tag in tags if tag.startswith("employee:")}),
-                "departments": len({tag for tag in tags if tag.startswith("department:")}),
-                "teams": len({tag for tag in tags if tag.startswith("team:")}),
-                "tasks": len({document["task_id"] for document in timeline if document.get("task_id")}),
+                "projects": canonical["project_count"],
+                "employees": canonical["people_count"],
+                "departments": canonical["department_count"],
+                "teams": len(project_teams),
+                "tasks": canonical["task_count"],
                 "experiences": sum(item.get("record_kind") == "outcome" for item in timeline),
                 "outcomes": outcome_counts,
-                "current_reference_documents": sum(
-                    "source:organization" in document["tags"] for document in timeline
-                ),
+                "current_reference_documents": self.rag.count(),
             },
             "documents": timeline,
+            "rag_documents": self.rag.list_documents(),
             "memories": [
                 self._memory_summary(memory) for memory in memories.get("items", [])
             ],

@@ -24,7 +24,7 @@ import { DecisionsView } from './views/DecisionsView';
 import { ExpertsView } from './views/ExpertsView';
 import { ExpertReview } from './views/ExpertReview';
 import { SystemHealth } from './views/SystemHealth';
-import { KnowledgeIngest } from './views/KnowledgeIngest';
+import { KnowledgeIngestLive } from './views/KnowledgeIngestLive';
 import { ArchitectureView } from './views/ArchitectureView';
 
 export default function App() {
@@ -160,7 +160,7 @@ export default function App() {
           )}
 
           {currentPath === 'ingest' && (
-            <KnowledgeIngest onNavigate={handleNavigate} onShowToast={showToast} />
+            <KnowledgeIngestLive onNavigate={handleNavigate} onShowToast={showToast} />
           )}
 
           {currentPath === 'architecture' && (
