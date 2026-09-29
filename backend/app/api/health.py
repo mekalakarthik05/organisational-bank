@@ -1,33 +1,21 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.database import get_db
-from app.models import Document, DocumentChunk, Feedback, Project
+from app.services.hindsight_client import HindsightClient
 
 router = APIRouter()
 
 
 @router.get("/health")
-def health(db: Session = Depends(get_db)):
-    db_ok, counts = False, {}
+async def health():
     try:
-        db.execute(text("SELECT 1"))
-        db_ok = True
-        counts = {
-            "documents": db.query(Document).count(),
-            "chunks": db.query(DocumentChunk).count(),
-            "projects": db.query(Project).count(),
-            "feedback": db.query(Feedback).count(),
-        }
-    except Exception:
-        pass
+        stats = await HindsightClient().get_bank_stats(settings.HINDSIGHT_BANK_ID)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Hindsight is unavailable") from exc
     return {
-        "status": "ok" if db_ok else "degraded",
-        "database": db_ok,
+        "status": "ok",
+        "hindsight": True,
+        "bank_stats": stats,
         "groq_configured": bool(settings.GROQ_API_KEY),
         "groq_model": settings.GROQ_MODEL,
-        "embedding_model": settings.EMBEDDING_MODEL,
-        "counts": counts,
     }

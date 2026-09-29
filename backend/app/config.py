@@ -2,9 +2,14 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    # Hindsight Cloud
+    HINDSIGHT_API_KEY: str = ""
+    HINDSIGHT_BANK_ID: str = ""
+    HINDSIGHT_BASE_URL: str = "https://api.hindsight.vectorize.io"
+
     # Groq (LLM only — embeddings run locally)
     GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
 
     # Database
     DATABASE_URL: str = "postgresql+psycopg2://brain:brain@localhost:5432/brain"

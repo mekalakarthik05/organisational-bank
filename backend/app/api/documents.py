@@ -1,87 +1,92 @@
 import hashlib
-import os
+import io
 from pathlib import Path
-from typing import Optional
+import re
+from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy.orm import Session
+from docx import Document as DocxDocument
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pypdf import PdfReader
 
 from app.config import settings
-from app.database import get_db
-from app.models import Document, DocumentChunk
-from app.services.ingestion import (ALLOWED_EXTENSIONS, MAX_FILE_SIZE,
-                                    ingest_document)
-from app.utils import parse_uuid
+from app.services.hindsight_client import HindsightClient
+from app.services.hindsight_rag import HindsightRAG
 
 router = APIRouter()
+MAX_FILE_SIZE = 15 * 1024 * 1024
+ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "md"}
+
+
+def _extract_text(filename: str, content: bytes) -> str:
+    extension = Path(filename).suffix.lower()
+    if extension == ".pdf":
+        return "\n".join(
+            page.extract_text() or "" for page in PdfReader(io.BytesIO(content)).pages
+        )
+    if extension == ".docx":
+        document = DocxDocument(io.BytesIO(content))
+        return "\n".join(paragraph.text for paragraph in document.paragraphs)
+    return content.decode("utf-8-sig")
 
 
 @router.post("/documents/upload")
-def upload_document(
+async def upload_document(
     file: UploadFile = File(...),
-    title: Optional[str] = Form(None),
-    doc_type: Optional[str] = Form(None),
-    project_name: Optional[str] = Form(None),
-    project_id: Optional[str] = Form(None),
-    tags: Optional[str] = Form(None),  # comma-separated
-    db: Session = Depends(get_db),
+    title: str | None = Form(None),
+    doc_type: str | None = Form(None),
+    tags: str | None = Form(None),
+    source_reference: str | None = Form(None),
+    document_id: str | None = Form(None),
 ):
     filename = file.filename or "upload"
     ext = Path(filename).suffix.lower().lstrip(".")
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type '.{ext}'. Allowed: pdf, docx, txt, md")
 
-    content = file.file.read()
+    content = await file.read()
     if not content:
         raise HTTPException(400, "Uploaded file is empty")
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(400, "File too large (max 15 MB)")
+    if document_id and not re.fullmatch(r"[A-Za-z0-9._:-]{3,128}", document_id):
+        raise HTTPException(422, "Document ID must be 3-128 letters, digits, '.', '_', ':', or '-'")
+    if source_reference is not None and len(source_reference.strip()) > 300:
+        raise HTTPException(422, "Source reference must be at most 300 characters")
 
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    dest = Path(settings.UPLOAD_DIR) / f"{hashlib.sha256(content).hexdigest()[:16]}_{filename}"
-    dest.write_bytes(content)
-
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     try:
-        result = ingest_document(db, str(dest), filename, title=title, doc_type=doc_type,
-                                 project_id=project_id, project_name=project_name,
-                                 tags=tag_list)
-    except ValueError as e:
-        raise HTTPException(422, str(e))
+        extracted = _extract_text(filename, content).strip()
+    except Exception as exc:
+        raise HTTPException(422, "Could not extract text from the uploaded file") from exc
+    if not extracted:
+        raise HTTPException(422, "No readable text was found in the uploaded file")
 
-    if result["status"] == "duplicate":
-        dest.unlink(missing_ok=True)  # don't keep duplicate copies on disk
-    return result
+    metadata: dict[str, Any] = {
+        "title": title or filename,
+        "doc_type": doc_type or "GENERAL",
+        "tags": [tag.strip() for tag in (tags or "").split(",") if tag.strip()],
+        "document_id": document_id or hashlib.sha256(content).hexdigest(),
+        "source_reference": source_reference.strip() if source_reference and source_reference.strip() else f"Uploaded file: {filename}",
+        "version": "1",
+    }
+    try:
+        result = await HindsightRAG().ingest_document(extracted, metadata)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Document could not be retained in Hindsight"
+        ) from exc
+    return {
+        "status": result.get("status", "stored"),
+        "title": metadata["title"],
+        "document_id": metadata["document_id"],
+        "hindsight": result,
+    }
 
 
 @router.get("/documents")
-def list_documents(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    docs = (db.query(Document)
-              .order_by(Document.created_at.desc(), Document.title)
-              .offset(skip).limit(limit).all())
-    return [{
-        "id": str(d.id), "title": d.title, "doc_type": d.doc_type,
-        "status": d.status, "tags": d.tags or [], "version": d.version,
-        "project_id": str(d.project_id) if d.project_id else None,
-        "created_at": d.created_at.isoformat(),
-        "meta": d.meta or {},
-    } for d in docs]
-
-
-@router.get("/documents/{document_id}")
-def get_document(document_id: str, db: Session = Depends(get_db)):
-    doc_id = parse_uuid(document_id)
-    doc = db.query(Document).filter(Document.id == doc_id).first() if doc_id else None
-    if not doc:
-        raise HTTPException(404, "Document not found")
-    chunks = (db.query(DocumentChunk)
-                .filter(DocumentChunk.document_id == doc.id)
-                .order_by(DocumentChunk.chunk_index).all())
-    return {
-        "id": str(doc.id), "title": doc.title, "doc_type": doc.doc_type,
-        "status": doc.status, "tags": doc.tags or [], "file_path": doc.file_path,
-        "created_at": doc.created_at.isoformat(), "meta": doc.meta or {},
-        "chunks": [{"id": str(c.id), "chunk_index": c.chunk_index,
-                    "section": c.section, "page_number": c.page_number,
-                    "content": c.content} for c in chunks],
-    }
+async def list_documents():
+    try:
+        return await HindsightClient().list_documents(settings.HINDSIGHT_BANK_ID)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Could not list Hindsight documents"
+        ) from exc
